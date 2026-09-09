@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import os
 import sys
 from datetime import datetime
@@ -11,26 +10,19 @@ import requests
 
 CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
 LAGOS = ZoneInfo("Africa/Lagos")
 
 TARGET_CURRENCIES = {"USD", "EUR", "GBP"}
-HIGH_VALUE_KEYWORDS = (
-    "interest rate", "refinancing", "monetary policy", "policy statement",
-    "press conference", "central bank", "cpi", "inflation", "ppi",
-    "gdp", "employment", "payroll", "unemployment", "retail sales",
-    "pmi", "manufacturing", "services", "consumer confidence",
-    "consumer sentiment", "inflation expectations", "wage", "earnings",
-    "trade balance", "bond auction", "fed", "ecb", "boe", "bank rate",
-)
 
 
 def fetch_calendar() -> list[dict[str, Any]]:
     response = requests.get(
         CALENDAR_URL,
         timeout=30,
-        headers={"User-Agent": "M3-Weekly-Macro-News-Bot/1.0"},
+        headers={"User-Agent": "M3-Weekly-Macro-News-Bot/1.1"},
     )
     response.raise_for_status()
     data = response.json()
@@ -41,14 +33,11 @@ def fetch_calendar() -> list[dict[str, Any]]:
 
 def is_relevant(event: dict[str, Any]) -> bool:
     currency = str(event.get("country", "")).upper()
-    impact = str(event.get("impact", "")).lower()
-    title = str(event.get("title", "")).lower()
+    impact = str(event.get("impact", "")).strip().lower()
 
-    if currency not in TARGET_CURRENCIES:
-        return False
-    if impact in {"high", "medium"}:
-        return True
-    return any(keyword in title for keyword in HIGH_VALUE_KEYWORDS)
+    # Keep the weekly digest focused strictly on Medium and High impact events.
+    # Low impact events are intentionally excluded, even if their title looks important.
+    return currency in TARGET_CURRENCIES and impact in {"high", "medium"}
 
 
 def parse_date(value: str) -> datetime:
@@ -78,48 +67,65 @@ def build_prompt(events_text: str) -> str:
     today = datetime.now(LAGOS).strftime("%A, %d %B %Y")
     return f"""You are the macroeconomic news analyst for M3 Capital.
 
-Today is {today}. Produce the M3 WEEKLY MACRO NEWS BRIEF from the supplied economic calendar.
+Today is {today}. Create a clean, readable WEEKLY MACRO NEWS BRIEF from the supplied economic calendar.
 
-IMPORTANT SCOPE:
-- This is a NEWS AND MACRO INTELLIGENCE REPORT.
-- Do NOT give buy signals, sell signals, entries, stop losses, take profits, or trade instructions.
-- Do NOT tell the reader to buy or sell anything.
-- Explain information and possible macroeconomic reactions only.
-- Do not pretend a macro relationship is guaranteed. Explain uncertainty when appropriate.
-- Focus on USD, EUR, and GOLD. Include GBP context when a GBP event materially matters to GBP/USD.
-- Prioritize genuinely important events. Do not waste space explaining every minor calendar item.
+SCOPE:
+- News and macro intelligence only.
+- NEVER give buy/sell signals, entries, stop losses, take profits, or trade instructions.
+- Focus on USD, EUR, GOLD, and only include GBP when it materially matters to GBP/USD.
+- Use only the supplied Medium and High impact events.
+- Do not discuss Low impact events.
+- Do not treat any macro reaction as guaranteed. Explain uncertainty when relevant.
 
-For each important event, explain:
-1. What the event is and why it matters.
-2. What the market is currently expecting, using the forecast and previous values when available.
-3. What a stronger-than-expected result could generally mean.
-4. What a weaker-than-expected result could generally mean.
-5. Potential impact on USD: Bullish / Bearish / Mixed / Limited, with a short reason.
-6. Potential impact on EUR: Bullish / Bearish / Mixed / Limited, with a short reason.
-7. Potential impact on GOLD: Bullish / Bearish / Mixed / Limited, with a short reason.
-8. What could invalidate the simple textbook reaction, such as revisions, bond yields, central-bank guidance, positioning, or an already-priced expectation.
+For each of the most important events, use this exact compact structure:
 
-Then provide:
-- WEEK AHEAD: the 3 to 7 most important macro themes/events.
-- USD WATCH: the main USD-sensitive events.
-- EUR WATCH: the main EUR-sensitive events.
-- GOLD WATCH: the main macro drivers for gold this week.
-- MACRO SUMMARY: a short plain-English summary of what matters most this week.
+[IMPACT] EVENT NAME
+Date/time: ...
+Forecast: ... | Previous: ...
+What it means: ...
+What is expected: ...
+If stronger than expected: ...
+If weaker than expected: ...
+USD: Bullish / Bearish / Mixed / Limited - reason
+EUR: Bullish / Bearish / Mixed / Limited - reason
+GOLD: Bullish / Bearish / Mixed / Limited - reason
+Key caveat: ...
 
-Use clear headings and concise bullet points. Use plain text only. Do not use Markdown tables. Do not include citations or URLs.
+Do not force an analysis for every event if several are minor duplicates. Prioritize the events that can materially change the macro picture.
+
+After the event sections, add:
+
+WEEK AHEAD
+- 3 to 5 biggest macro themes/events.
+
+USD WATCH
+- The most important USD drivers.
+
+EUR WATCH
+- The most important EUR drivers.
+
+GOLD WATCH
+- The most important macro drivers for gold.
+
+MACRO SUMMARY
+- A short plain-English summary of what matters most this week.
+
+Formatting rules:
+- Plain text only.
+- Use short paragraphs and bullets.
+- Put a blank line between events.
+- Keep the report concise enough to read comfortably in Telegram.
+- Do not use Markdown tables.
+- Do not include citations or URLs.
+- Do not include trading instructions.
 
 CALENDAR DATA:
 {events_text}
 """
 
 
-def generate_report(events: list[dict[str, Any]]) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not configured")
-
-    prompt = build_prompt(format_events(events))
-    url = GEMINI_URL.format(model=GEMINI_MODEL)
+def call_gemini(model: str, prompt: str, api_key: str) -> str:
+    url = GEMINI_URL.format(model=model)
     response = requests.post(
         url,
         headers={
@@ -129,36 +135,68 @@ def generate_report(events: list[dict[str, Any]]) -> str:
         json={
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                "temperature": 0.25,
-                "maxOutputTokens": 6000,
+                "temperature": 0.2,
+                "maxOutputTokens": 4500,
             },
         },
         timeout=90,
     )
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(f"Gemini {model} returned HTTP {response.status_code}: {response.text[:500]}")
+
     payload = response.json()
     try:
         return payload["candidates"][0]["content"]["parts"][0]["text"].strip()
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected Gemini response: {payload}") from exc
+        raise RuntimeError(f"Unexpected Gemini response from {model}: {str(payload)[:800]}") from exc
+
+
+def generate_report(events: list[dict[str, Any]]) -> str:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    prompt = build_prompt(format_events(events))
+
+    try:
+        report = call_gemini(GEMINI_MODEL, prompt, api_key)
+        print(f"Gemini analysis generated with {GEMINI_MODEL}.")
+        return report
+    except Exception as primary_error:
+        print(f"Primary Gemini model failed: {primary_error}", file=sys.stderr)
+
+    # Free, lightweight fallback model. This keeps the weekly report useful
+    # if the primary model is temporarily rate-limited or unavailable.
+    if GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
+        try:
+            report = call_gemini(GEMINI_FALLBACK_MODEL, prompt, api_key)
+            print(f"Gemini analysis generated with fallback model {GEMINI_FALLBACK_MODEL}.")
+            return report
+        except Exception as fallback_error:
+            print(f"Fallback Gemini model failed: {fallback_error}", file=sys.stderr)
+
+    raise RuntimeError("All Gemini analysis attempts failed")
 
 
 def fallback_report(events: list[dict[str, Any]]) -> str:
     lines = [
-        "M3 CAPITAL WEEKLY MACRO NEWS BRIEF",
+        "M3 CAPITAL | WEEKLY MACRO NEWS",
         datetime.now(LAGOS).strftime("Week generated %d %B %Y"),
         "",
-        "AI analysis was unavailable, so this is the calendar-only fallback.",
+        "AI analysis was unavailable. Calendar data only:",
         "",
     ]
     for event in sorted(events, key=lambda item: parse_date(item["date"])):
         local_time = parse_date(event["date"]).astimezone(LAGOS)
-        lines.append(
-            f"• {local_time.strftime('%a %d %b %H:%M')} | {event.get('country')} | "
-            f"{event.get('impact')} | {event.get('title')} | "
-            f"Forecast: {event.get('forecast') or 'N/A'} | Previous: {event.get('previous') or 'N/A'}"
+        lines.extend(
+            [
+                f"[{str(event.get('impact', '')).upper()}] {event.get('title', '')}",
+                f"{local_time.strftime('%a %d %b %H:%M')} | {event.get('country', '')}",
+                f"Forecast: {event.get('forecast') or 'N/A'} | Previous: {event.get('previous') or 'N/A'}",
+                "",
+            ]
         )
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip()
 
 
 def send_telegram(text: str) -> None:
@@ -167,7 +205,6 @@ def send_telegram(text: str) -> None:
     if not token or not chat_id:
         raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
 
-    # Telegram text messages have a practical size limit. Split at line boundaries.
     chunks: list[str] = []
     current = ""
     for line in text.splitlines():
@@ -199,7 +236,7 @@ def main() -> int:
         calendar = fetch_calendar()
         events = [event for event in calendar if is_relevant(event)]
         if not events:
-            raise RuntimeError("No relevant USD/EUR/GBP events were found in the weekly calendar")
+            raise RuntimeError("No Medium or High impact USD/EUR/GBP events were found in the weekly calendar")
 
         try:
             report = generate_report(events)
