@@ -18,7 +18,7 @@ TARGET_CURRENCIES = {"USD", "EUR", "GBP"}
 
 
 def fetch_calendar() -> list[dict[str, Any]]:
-    response = requests.get(CALENDAR_URL, timeout=30, headers={"User-Agent": "M3-Weekly-Macro-News-Bot/1.3"})
+    response = requests.get(CALENDAR_URL, timeout=30, headers={"User-Agent": "M3-Weekly-Macro-News-Bot/1.4"})
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, list):
@@ -59,17 +59,20 @@ def build_prompt(events_text: str) -> str:
     today = datetime.now(LAGOS).strftime("%A, %d %B %Y")
     return f"""You are the macroeconomic news analyst for M3 Capital.
 
-Today is {today}. Create a clean, readable WEEKLY MACRO NEWS BRIEF from the supplied economic calendar.
+Today is {today}. Create a complete WEEKLY MACRO NEWS BRIEF from the supplied economic calendar.
 
 SCOPE:
 - News and macro intelligence only.
 - NEVER give buy/sell signals, entries, stop losses, take profits, or trade instructions.
-- Focus on USD, EUR/USD, and GOLD. Include GBP only when materially relevant to GBP/USD.
-- Use only Medium and High impact events.
+- Focus on USD, EUR/USD, and GOLD. Include GBP when the event is relevant to GBP/USD.
+- Use ONLY Medium and High impact events.
+- Do NOT omit an eligible Medium or High impact calendar event because it seems less important.
+- Every eligible event supplied in CALENDAR DATA must be represented in the report.
+- You may combine duplicate or tightly linked releases that occur at the same time, but you MUST mention every component event and explain its meaning and likely implications.
 - Do not discuss Low impact events.
 - Do not present macro reactions as guaranteed.
 
-For each important event, use:
+FOR EVERY ELIGIBLE EVENT OR TIGHTLY LINKED EVENT GROUP, USE:
 🔴 or 🟠 EVENT NAME
 Date/time: ...
 Forecast: ... | Previous: ...
@@ -80,11 +83,12 @@ If weaker than expected: ...
 USD: Bullish / Bearish / Mixed / Limited - reason
 EUR/USD: Bullish / Bearish / Mixed / Limited - reason
 GOLD: Bullish / Bearish / Mixed / Limited - reason
+GBP/USD: Bullish / Bearish / Mixed / Limited - reason, only when relevant
 Key caveat: ...
 
-Prioritize events that can materially change the macro picture. Do not waste space repeating minor duplicates.
+Do not create a short selection of the week's events. The purpose is to explain ALL eligible Medium and High impact events, not merely the biggest ones.
 
-Then add:
+After all events, add:
 WEEK AHEAD
 USD WATCH
 EUR WATCH
@@ -95,8 +99,9 @@ Formatting:
 - Plain text only.
 - Short paragraphs and bullets.
 - Blank line between events.
-- Telegram-friendly and concise.
+- Telegram-friendly and readable.
 - No tables, URLs, citations, or trading instructions.
+- Be concise per event so the complete weekly calendar fits comfortably in the response.
 
 CALENDAR DATA:
 {events_text}
@@ -108,7 +113,10 @@ def call_gemini(model: str, prompt: str, api_key: str) -> str:
     response = requests.post(
         url,
         headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 4500}},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 8000},
+        },
         timeout=90,
     )
     if not response.ok:
