@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -22,7 +22,7 @@ def fetch_calendar() -> list[dict[str, Any]]:
     response = requests.get(
         CALENDAR_URL,
         timeout=30,
-        headers={"User-Agent": "M3-Weekly-Macro-News-Bot/1.1"},
+        headers={"User-Agent": "M3-Weekly-Macro-News-Bot/1.2"},
     )
     response.raise_for_status()
     data = response.json()
@@ -34,14 +34,15 @@ def fetch_calendar() -> list[dict[str, Any]]:
 def is_relevant(event: dict[str, Any]) -> bool:
     currency = str(event.get("country", "")).upper()
     impact = str(event.get("impact", "")).strip().lower()
-
-    # Keep the weekly digest focused strictly on Medium and High impact events.
-    # Low impact events are intentionally excluded, even if their title looks important.
     return currency in TARGET_CURRENCIES and impact in {"high", "medium"}
 
 
 def parse_date(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def impact_dot(event: dict[str, Any]) -> str:
+    return "🔴" if str(event.get("impact", "")).strip().lower() == "high" else "🟠"
 
 
 def format_events(events: list[dict[str, Any]]) -> str:
@@ -152,22 +153,23 @@ def call_gemini(model: str, prompt: str, api_key: str) -> str:
 
 
 def generate_report(events: list[dict[str, Any]]) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
 
+    # An empty GEMINI_MODEL secret must never produce a malformed Gemini URL.
+    configured_model = os.getenv("GEMINI_MODEL", "").strip()
+    primary_model = configured_model or DEFAULT_GEMINI_MODEL
     prompt = build_prompt(format_events(events))
 
     try:
-        report = call_gemini(GEMINI_MODEL, prompt, api_key)
-        print(f"Gemini analysis generated with {GEMINI_MODEL}.")
+        report = call_gemini(primary_model, prompt, api_key)
+        print(f"Gemini analysis generated with {primary_model}.")
         return report
     except Exception as primary_error:
         print(f"Primary Gemini model failed: {primary_error}", file=sys.stderr)
 
-    # Free, lightweight fallback model. This keeps the weekly report useful
-    # if the primary model is temporarily rate-limited or unavailable.
-    if GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
+    if GEMINI_FALLBACK_MODEL != primary_model:
         try:
             report = call_gemini(GEMINI_FALLBACK_MODEL, prompt, api_key)
             print(f"Gemini analysis generated with fallback model {GEMINI_FALLBACK_MODEL}.")
@@ -180,7 +182,6 @@ def generate_report(events: list[dict[str, Any]]) -> str:
 
 def fallback_report(events: list[dict[str, Any]]) -> str:
     lines = [
-        "M3 CAPITAL | WEEKLY MACRO NEWS",
         datetime.now(LAGOS).strftime("Week generated %d %B %Y"),
         "",
         "AI analysis was unavailable. Calendar data only:",
@@ -190,7 +191,7 @@ def fallback_report(events: list[dict[str, Any]]) -> str:
         local_time = parse_date(event["date"]).astimezone(LAGOS)
         lines.extend(
             [
-                f"[{str(event.get('impact', '')).upper()}] {event.get('title', '')}",
+                f"{impact_dot(event)} {event.get('title', '')}",
                 f"{local_time.strftime('%a %d %b %H:%M')} | {event.get('country', '')}",
                 f"Forecast: {event.get('forecast') or 'N/A'} | Previous: {event.get('previous') or 'N/A'}",
                 "",
@@ -200,8 +201,8 @@ def fallback_report(events: list[dict[str, Any]]) -> str:
 
 
 def send_telegram(text: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
         raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
 
