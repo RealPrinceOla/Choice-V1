@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
 LAGOS = ZoneInfo("Africa/Lagos")
@@ -108,7 +108,7 @@ def call_gemini(model: str, prompt: str, api_key: str) -> str:
     response = requests.post(
         url,
         headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4500}},
+        json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 4500}},
         timeout=90,
     )
     if not response.ok:
