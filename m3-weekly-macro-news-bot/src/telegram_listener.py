@@ -2,21 +2,19 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import requests
 
-from main import fetch_calendar, generate_explanation, is_relevant, send_to_chat
+from main import fetch_calendar, generate_explanation, is_relevant, send_to_chat, telegram_call
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 POLL_SECONDS = 240
 LONG_POLL_TIMEOUT = 25
 EXPLANATION_TTL_SECONDS = 3600
-GENERATION_STALE_SECONDS = 900
 STATE_FILE = Path(__file__).resolve().parent.parent / "state" / "explain_state.json"
 
 
@@ -50,42 +48,24 @@ def telegram_call_local(method: str, payload: dict[str, Any] | None = None) -> d
 def register_commands() -> None:
     telegram_call_local(
         "setMyCommands",
-        {
-            "commands": [
-                {"command": "explain", "description": "Explain this week's macro news"}
-            ]
-        },
+        {"commands": [{"command": "explain", "description": "Explain this week's macro news"}]},
     )
 
 
-def answer_callback(callback_id: str, text: str) -> None:
+def answer_callback(callback_id: str) -> None:
     telegram_call_local(
         "answerCallbackQuery",
-        {
-            "callback_query_id": callback_id,
-            "text": text,
-            "show_alert": False,
-        },
+        {"callback_query_id": callback_id, "text": "Generating the detailed macro explanation...", "show_alert": False},
     )
-
-
-def empty_state() -> dict[str, Any]:
-    return {
-        "chat_id": None,
-        "message_ids": [],
-        "expires_at": None,
-        "status": "idle",
-        "generation_started_at": None,
-    }
 
 
 def load_state() -> dict[str, Any]:
     if not STATE_FILE.exists():
-        return empty_state()
+        return {"chat_id": None, "message_ids": [], "expires_at": None, "status": "idle"}
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return empty_state()
+            return {"chat_id": None, "message_ids": [], "expires_at": None, "status": "idle"}
         ids = data.get("message_ids", [])
         if not isinstance(ids, list):
             ids = []
@@ -94,151 +74,99 @@ def load_state() -> dict[str, Any]:
             "message_ids": [int(x) for x in ids if str(x).isdigit()],
             "expires_at": data.get("expires_at"),
             "status": str(data.get("status", "idle")),
-            "generation_started_at": data.get("generation_started_at"),
         }
     except Exception as error:
         print(f"Could not read explanation state: {error}")
-        return empty_state()
+        return {"chat_id": None, "message_ids": [], "expires_at": None, "status": "idle"}
 
 
-def save_state(
-    chat_id: str | int | None,
-    message_ids: list[int],
-    expires_at: str | None,
-    status: str = "idle",
-    generation_started_at: str | None = None,
-) -> None:
+def save_state(chat_id: str | int, message_ids: list[int], expires_at: str | None, status: str = "active") -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(
-        json.dumps(
-            {
-                "chat_id": str(chat_id) if chat_id is not None else None,
-                "message_ids": message_ids,
-                "expires_at": expires_at,
-                "status": status,
-                "generation_started_at": generation_started_at,
-            },
-            indent=2,
-        )
-        + "\n",
+        json.dumps({"chat_id": str(chat_id), "message_ids": message_ids, "expires_at": expires_at, "status": status}, indent=2) + "\n",
         encoding="utf-8",
     )
 
 
-def persist_state() -> None:
+def delete_message_ids(chat_id: str | int, message_ids: list[int]) -> None:
+    if not message_ids:
+        return
+    try:
+        telegram_call(
+            "deleteMessages",
+            {"chat_id": chat_id, "message_ids": message_ids},
+        )
+        return
+    except Exception as error:
+        print(f"Batch delete failed, trying individual deletes: {error}")
+    for message_id in message_ids:
+        try:
+            telegram_call_local("deleteMessage", {"chat_id": chat_id, "message_id": message_id})
+        except Exception as individual_error:
+            print(f"Could not delete message {message_id}: {individual_error}")
+
+
+def clear_state() -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(
+        json.dumps({"chat_id": None, "message_ids": [], "expires_at": None, "status": "idle"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def state_is_active(state: dict[str, Any]) -> bool:
+    if state.get("status") != "active" or not state.get("message_ids"):
+        return False
+    expires_at = state.get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        return datetime.fromisoformat(expires_at).timestamp() > time.time()
+    except Exception:
+        return False
+
+
+def persist_state_to_git() -> None:
+    import subprocess
+
     try:
         subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
-        subprocess.run(
-            ["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
-            check=True,
-        )
-        subprocess.run(
-            ["git", "add", str(STATE_FILE.relative_to(Path.cwd()))],
-            check=True,
-        )
-        result = subprocess.run(
-            ["git", "commit", "-m", "Update Telegram explanation state"],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        subprocess.run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], check=True)
+        subprocess.run(["git", "add", str(STATE_FILE.relative_to(Path.cwd()))], check=True)
+        result = subprocess.run(["git", "commit", "-m", "Update Telegram explanation state"], text=True, capture_output=True, check=False)
         if result.returncode == 0:
             subprocess.run(["git", "push", "origin", "HEAD:main"], check=True)
             print("Explanation state persisted to main.")
         elif "nothing to commit" in (result.stdout + result.stderr).lower():
             print("Explanation state unchanged.")
         else:
-            raise RuntimeError(result.stdout + result.stderr)
+            print(f"Could not commit explanation state: {result.stdout}{result.stderr}")
     except Exception as error:
         print(f"Could not persist explanation state: {error}")
 
 
-def parse_iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
-def explanation_is_active(state: dict[str, Any]) -> bool:
-    if state.get("status") == "generating":
-        started = parse_iso(state.get("generation_started_at"))
-        if started and datetime.now(timezone.utc) - started < timedelta(seconds=GENERATION_STALE_SECONDS):
-            return True
-        return False
-
-    ids = state.get("message_ids", [])
-    expires = parse_iso(state.get("expires_at"))
-    return bool(ids and expires and datetime.now(timezone.utc) < expires)
-
-
-def begin_generation(chat_id: str | int) -> bool:
-    state = load_state()
-    if explanation_is_active(state):
-        return False
-
-    started = datetime.now(timezone.utc)
-    save_state(
-        chat_id,
-        [],
-        None,
-        status="generating",
-        generation_started_at=started.isoformat(),
-    )
-    persist_state()
-    return True
-
-
-def finish_generation_with_error() -> None:
-    save_state(None, [], None, status="idle", generation_started_at=None)
-    persist_state()
-
-
-def send_explanation(chat_id: str | int, text: str) -> list[int]:
-    message_ids = send_to_chat(chat_id, text)
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=EXPLANATION_TTL_SECONDS)
-    save_state(
-        chat_id,
-        message_ids,
-        expires_at.isoformat(),
-        status="idle",
-        generation_started_at=None,
-    )
-    persist_state()
-    return message_ids
-
-
-def explain_for_chat(chat_id: str | int) -> str:
-    configured_chat = target_chat_id()
-    if str(chat_id) != configured_chat:
+def explain_for_chat(chat_id: str | int) -> None:
+    if str(chat_id) != target_chat_id():
         print(f"Ignoring explain request from unconfigured chat {chat_id}.")
-        return "ignored"
+        return
 
-    if not begin_generation(chat_id):
-        return "active"
+    state = load_state()
+    if state_is_active(state):
+        send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nAn explanation is already available. It will automatically disappear after one hour.")
+        return
 
-    try:
-        calendar = fetch_calendar()
-        events = [event for event in calendar if is_relevant(event)]
-        if not events:
-            send_explanation(
-                chat_id,
-                "M3 CAPITAL | WEEKLY MACRO NEWS\n\nNo Medium or High impact USD, EUR, or GBP events were found.",
-            )
-            return "sent"
-
+    calendar = fetch_calendar()
+    events = [event for event in calendar if is_relevant(event)]
+    if not events:
+        message_ids = send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nNo Medium or High impact USD, EUR, or GBP events were found.")
+    else:
         explanation = generate_explanation(events)
-        message_ids = send_explanation(
-            chat_id,
-            "M3 CAPITAL | WEEKLY MACRO NEWS EXPLANATION\n\n" + explanation,
-        )
-        print(f"Sent temporary explanation messages: {message_ids}")
-        return "sent"
-    except Exception:
-        finish_generation_with_error()
-        raise
+        message_ids = send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS EXPLANATION\n\n" + explanation)
+
+    expires_at = (datetime.now().astimezone() + timedelta(seconds=EXPLANATION_TTL_SECONDS)).isoformat()
+    save_state(chat_id, message_ids, expires_at, "active")
+    persist_state_to_git()
+    print(f"Sent explanation messages: {message_ids}; expires at {expires_at}")
 
 
 def handle_update(update: dict[str, Any]) -> None:
@@ -251,23 +179,12 @@ def handle_update(update: dict[str, Any]) -> None:
         chat_id = chat.get("id")
         if chat_id is None:
             return
-
-        callback_id = str(callback.get("id", ""))
+        answer_callback(str(callback.get("id", "")))
         try:
-            result = explain_for_chat(chat_id)
-            if result == "active":
-                answer_callback(callback_id, "An explanation is already available or being generated.")
-            elif result == "ignored":
-                answer_callback(callback_id, "This chat is not configured for the macro bot.")
-            else:
-                answer_callback(callback_id, "Explanation generated. It will auto-delete after 1 hour.")
+            explain_for_chat(chat_id)
         except Exception as error:
             print(f"Explain button failed: {error}")
-            answer_callback(callback_id, "The explanation could not be generated right now. Please try again.")
-            send_to_chat(
-                chat_id,
-                "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.",
-            )
+            send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.")
         return
 
     message = update.get("message")
@@ -277,60 +194,46 @@ def handle_update(update: dict[str, Any]) -> None:
     chat_id = chat.get("id")
     if chat_id is None or str(chat_id) != target_chat_id():
         return
-
     text = str(message.get("text", "")).strip()
     command = text.split()[0].split("@", 1)[0].lower() if text else ""
     if command != "/explain":
         return
-
     try:
-        result = explain_for_chat(chat_id)
-        if result == "active":
-            print("/explain ignored because an explanation is already active or generating.")
-        elif result == "sent":
-            print("/explain completed successfully.")
+        explain_for_chat(chat_id)
     except Exception as error:
         print(f"/explain failed: {error}")
-        send_to_chat(
-            chat_id,
-            "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.",
-        )
+        send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.")
 
 
 def get_updates(offset: int | None) -> list[dict[str, Any]]:
-    payload: dict[str, Any] = {
-        "timeout": LONG_POLL_TIMEOUT,
-        "limit": 100,
-        "allowed_updates": ["message", "callback_query"],
-    }
+    payload: dict[str, Any] = {"timeout": LONG_POLL_TIMEOUT, "limit": 100, "allowed_updates": ["message", "callback_query"]}
     if offset is not None:
         payload["offset"] = offset
-    result = telegram_call_local("getUpdates", payload)
-    return result.get("result", [])
+    return telegram_call_local("getUpdates", payload).get("result", [])
 
 
 def main() -> int:
     try:
-        telegram_call_local("deleteWebhook", {"drop_pending_updates": False})
         register_commands()
-
+        telegram_call_local("deleteWebhook", {"drop_pending_updates": False})
         deadline = time.time() + POLL_SECONDS
         offset: int | None = None
-
         print("Telegram explain listener started.")
         while time.time() < deadline:
             updates = get_updates(offset)
             if not updates:
                 continue
-
             for update in updates:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     offset = update_id + 1
                 handle_update(update)
-
         print("Telegram explain listener finished its polling window.")
         return 0
     except Exception as error:
         print(f"ERROR: {error}")
         return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
