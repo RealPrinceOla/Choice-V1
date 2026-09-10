@@ -40,6 +40,17 @@ def telegram_call(method: str, payload: dict[str, Any] | None = None) -> dict[st
     return data
 
 
+def register_commands() -> None:
+    telegram_call(
+        "setMyCommands",
+        {
+            "commands": [
+                {"command": "explain", "description": "Explain this week's macro news"}
+            ]
+        },
+    )
+
+
 def answer_callback(callback_id: str) -> None:
     telegram_call(
         "answerCallbackQuery",
@@ -60,7 +71,10 @@ def explain_for_chat(chat_id: str | int) -> None:
     calendar = fetch_calendar()
     events = [event for event in calendar if is_relevant(event)]
     if not events:
-        send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nNo Medium or High impact USD, EUR, or GBP events were found.")
+        send_to_chat(
+            chat_id,
+            "M3 CAPITAL | WEEKLY MACRO NEWS\n\nNo Medium or High impact USD, EUR, or GBP events were found.",
+        )
         return
 
     explanation = generate_explanation(events)
@@ -85,7 +99,10 @@ def handle_update(update: dict[str, Any]) -> None:
             explain_for_chat(chat_id)
         except Exception as error:
             print(f"Explain button failed: {error}")
-            send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.")
+            send_to_chat(
+                chat_id,
+                "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.",
+            )
         return
 
     message = update.get("message")
@@ -93,7 +110,7 @@ def handle_update(update: dict[str, Any]) -> None:
         return
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
-    if chat_id is None:
+    if chat_id is None or str(chat_id) != target_chat_id():
         return
 
     text = str(message.get("text", "")).strip()
@@ -102,11 +119,17 @@ def handle_update(update: dict[str, Any]) -> None:
         return
 
     try:
-        send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nGenerating the detailed macro explanation...")
+        send_to_chat(
+            chat_id,
+            "M3 CAPITAL | WEEKLY MACRO NEWS\n\nGenerating the detailed macro explanation...",
+        )
         explain_for_chat(chat_id)
     except Exception as error:
         print(f"/explain failed: {error}")
-        send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.")
+        send_to_chat(
+            chat_id,
+            "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThe detailed explanation could not be generated right now. Please try again.",
+        )
 
 
 def get_updates(offset: int | None) -> list[dict[str, Any]]:
@@ -125,6 +148,8 @@ def main() -> int:
     try:
         # Ensure long polling can be used if a webhook was previously configured.
         telegram_call("deleteWebhook", {"drop_pending_updates": False})
+        register_commands()
+
         deadline = time.time() + POLL_SECONDS
         offset: int | None = None
 
