@@ -207,7 +207,7 @@ def send_telegram(text: str, reply_markup: dict[str, Any] | None = None) -> None
         telegram_call("sendMessage", payload)
 
 
-def send_to_chat(chat_id: str | int, text: str) -> None:
+def send_to_chat(chat_id: str | int, text: str) -> list[int]:
     chunks: list[str] = []
     current = ""
     for line in text.splitlines():
@@ -221,8 +221,9 @@ def send_to_chat(chat_id: str | int, text: str) -> None:
     if current:
         chunks.append(current)
 
+    message_ids: list[int] = []
     for chunk in chunks:
-        telegram_call(
+        result = telegram_call(
             "sendMessage",
             {
                 "chat_id": chat_id,
@@ -230,6 +231,11 @@ def send_to_chat(chat_id: str | int, text: str) -> None:
                 "disable_web_page_preview": True,
             },
         )
+        message = result.get("result") or {}
+        message_id = message.get("message_id")
+        if isinstance(message_id, int):
+            message_ids.append(message_id)
+    return message_ids
 
 
 def weekly_keyboard() -> dict[str, Any]:
