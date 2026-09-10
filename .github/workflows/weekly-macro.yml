@@ -26,10 +26,8 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r m3-weekly-macro-news-bot/requirements.txt
 
-      - name: Generate and send weekly macro report
+      - name: Generate and send weekly macro calendar
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python m3-weekly-macro-news-bot/src/main.py
