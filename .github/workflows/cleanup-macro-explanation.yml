@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: m3-telegram-explanation-state
+  group: m3-telegram-explain-listener
   cancel-in-progress: false
 
 permissions:
