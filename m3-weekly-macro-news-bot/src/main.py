@@ -12,13 +12,17 @@ CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
+TELEGRAM_URL = "https://api.telegram.org/bot{token}/{method}"
 LAGOS = ZoneInfo("Africa/Lagos")
 TARGET_CURRENCIES = {"USD", "EUR", "GBP"}
 
 
 def fetch_calendar() -> list[dict[str, Any]]:
-    response = requests.get(CALENDAR_URL, timeout=30, headers={"User-Agent": "M3-Weekly-Macro-News-Bot/1.4"})
+    response = requests.get(
+        CALENDAR_URL,
+        timeout=30,
+        headers={"User-Agent": "M3-Weekly-Macro-News-Bot/2.0"},
+    )
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, list):
@@ -40,39 +44,52 @@ def impact_dot(event: dict[str, Any]) -> str:
     return "🔴" if str(event.get("impact", "")).strip().lower() == "high" else "🟠"
 
 
-def format_events(events: list[dict[str, Any]]) -> str:
-    rows = []
+def build_clean_weekly_message(events: list[dict[str, Any]]) -> str:
+    lines = [
+        "M3 CAPITAL | WEEKLY MACRO NEWS",
+        "",
+        f"Week generated {datetime.now(LAGOS).strftime('%d %B %Y')}",
+        "",
+    ]
     for event in sorted(events, key=lambda item: parse_date(item["date"])):
         local_time = parse_date(event["date"]).astimezone(LAGOS)
-        rows.append(" | ".join([
-            local_time.strftime("%a %d %b %H:%M"),
+        lines.extend([
+            f"{impact_dot(event)} {event.get('title', '')}",
+            f"{local_time.strftime('%a %d %b %H:%M')} | {event.get('country', '')}",
+            f"Forecast: {event.get('forecast') or 'N/A'} | Previous: {event.get('previous') or 'N/A'}",
+            "",
+        ])
+    return "\n".join(lines).rstrip()
+
+
+def build_explanation_prompt(events: list[dict[str, Any]]) -> str:
+    today = datetime.now(LAGOS).strftime("%A, %d %B %Y")
+    events_text = "\n".join(
+        " | ".join([
+            parse_date(event["date"]).astimezone(LAGOS).strftime("%a %d %b %H:%M"),
             str(event.get("country", "")),
             str(event.get("impact", "")),
             str(event.get("title", "")),
             f"Forecast={event.get('forecast') or 'N/A'}",
             f"Previous={event.get('previous') or 'N/A'}",
-        ]))
-    return "\n".join(rows)
-
-
-def build_prompt(events_text: str) -> str:
-    today = datetime.now(LAGOS).strftime("%A, %d %B %Y")
+        ])
+        for event in sorted(events, key=lambda item: parse_date(item["date"]))
+    )
     return f"""You are the macroeconomic news analyst for M3 Capital.
 
-Today is {today}. Create a complete WEEKLY MACRO NEWS BRIEF from the supplied economic calendar.
+Today is {today}. A user requested a detailed explanation of this week's Medium and High impact macroeconomic calendar.
 
-SCOPE:
-- News and macro intelligence only.
+PURPOSE:
+- Explain what the week's relevant news means and why it matters.
+- This is macroeconomic intelligence only.
 - NEVER give buy/sell signals, entries, stop losses, take profits, or trade instructions.
-- Focus on USD, EUR/USD, and GOLD. Include GBP when the event is relevant to GBP/USD.
-- Use ONLY Medium and High impact events.
-- Do NOT omit an eligible Medium or High impact calendar event because it seems less important.
-- Every eligible event supplied in CALENDAR DATA must be represented in the report.
-- You may combine duplicate or tightly linked releases that occur at the same time, but you MUST mention every component event and explain its meaning and likely implications.
-- Do not discuss Low impact events.
-- Do not present macro reactions as guaranteed.
+- Focus on USD, EUR/USD, GOLD, and GBP/USD when GBP is materially relevant.
+- Use ONLY the supplied Medium and High impact events.
+- Do not omit a materially important eligible event.
+- You MAY combine tightly linked releases into one section when they are part of the same economic decision or release window, but mention every component event.
+- Do not treat any market reaction as guaranteed.
 
-FOR EVERY ELIGIBLE EVENT OR TIGHTLY LINKED EVENT GROUP, USE:
+FOR EVERY EVENT OR TIGHTLY LINKED EVENT GROUP, INCLUDE:
 🔴 or 🟠 EVENT NAME
 Date/time: ...
 Forecast: ... | Previous: ...
@@ -83,12 +100,10 @@ If weaker than expected: ...
 USD: Bullish / Bearish / Mixed / Limited - reason
 EUR/USD: Bullish / Bearish / Mixed / Limited - reason
 GOLD: Bullish / Bearish / Mixed / Limited - reason
-GBP/USD: Bullish / Bearish / Mixed / Limited - reason, only when relevant
+GBP/USD: Bullish / Bearish / Mixed / Limited - reason, when relevant
 Key caveat: ...
 
-Do not create a short selection of the week's events. The purpose is to explain ALL eligible Medium and High impact events, not merely the biggest ones.
-
-After all events, add:
+After the events, include:
 WEEK AHEAD
 USD WATCH
 EUR WATCH
@@ -97,11 +112,10 @@ MACRO SUMMARY
 
 Formatting:
 - Plain text only.
-- Short paragraphs and bullets.
-- Blank line between events.
-- Telegram-friendly and readable.
+- Telegram-friendly.
+- Blank line between event sections.
+- Be detailed enough to be useful, but concise enough to avoid unnecessary repetition.
 - No tables, URLs, citations, or trading instructions.
-- Be concise per event so the complete weekly calendar fits comfortably in the response.
 
 CALENDAR DATA:
 {events_text}
@@ -128,45 +142,48 @@ def call_gemini(model: str, prompt: str, api_key: str) -> str:
         raise RuntimeError(f"Unexpected Gemini response: {str(payload)[:1000]}") from exc
 
 
-def generate_report(events: list[dict[str, Any]]) -> str:
+def generate_explanation(events: list[dict[str, Any]]) -> str:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
-    prompt = build_prompt(format_events(events))
+    prompt = build_explanation_prompt(events)
     try:
         report = call_gemini(GEMINI_MODEL, prompt, api_key)
-        print(f"Gemini analysis generated with {GEMINI_MODEL}.")
+        print(f"Gemini explanation generated with {GEMINI_MODEL}.")
         return report
     except Exception as primary_error:
         print(f"Primary Gemini model failed: {primary_error}", file=sys.stderr)
     try:
         report = call_gemini(GEMINI_FALLBACK_MODEL, prompt, api_key)
-        print(f"Gemini analysis generated with fallback model {GEMINI_FALLBACK_MODEL}.")
+        print(f"Gemini explanation generated with fallback model {GEMINI_FALLBACK_MODEL}.")
         return report
     except Exception as fallback_error:
         print(f"Fallback Gemini model failed: {fallback_error}", file=sys.stderr)
         raise RuntimeError("All Gemini analysis attempts failed") from fallback_error
 
 
-def fallback_report(events: list[dict[str, Any]]) -> str:
-    lines = [datetime.now(LAGOS).strftime("Week generated %d %B %Y"), "", "AI analysis was unavailable. Calendar data only:", ""]
-    for event in sorted(events, key=lambda item: parse_date(item["date"])):
-        local_time = parse_date(event["date"]).astimezone(LAGOS)
-        lines.extend([
-            f"{impact_dot(event)} {event.get('title', '')}",
-            f"{local_time.strftime('%a %d %b %H:%M')} | {event.get('country', '')}",
-            f"Forecast: {event.get('forecast') or 'N/A'} | Previous: {event.get('previous') or 'N/A'}",
-            "",
-        ])
-    return "\n".join(lines).rstrip()
-
-
-def send_telegram(text: str) -> None:
+def telegram_call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
+    response = requests.post(
+        TELEGRAM_URL.format(token=token, method=method),
+        json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram {method} failed: {result}")
+    return result
+
+
+def send_telegram(text: str, reply_markup: dict[str, Any] | None = None) -> None:
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
-    chunks = []
+    if not chat_id:
+        raise RuntimeError("TELEGRAM_CHAT_ID is required")
+
+    chunks: list[str] = []
     current = ""
     for line in text.splitlines():
         candidate = line if not current else current + "\n" + line
@@ -178,9 +195,49 @@ def send_telegram(text: str) -> None:
             current = candidate
     if current:
         chunks.append(current)
+
+    for index, chunk in enumerate(chunks):
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "disable_web_page_preview": True,
+        }
+        if reply_markup is not None and index == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
+        telegram_call("sendMessage", payload)
+
+
+def send_to_chat(chat_id: str | int, text: str) -> None:
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        candidate = line if not current else current + "\n" + line
+        if len(candidate) > 3900:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
     for chunk in chunks:
-        response = requests.post(TELEGRAM_URL.format(token=token), json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}, timeout=30)
-        response.raise_for_status()
+        telegram_call(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            },
+        )
+
+
+def weekly_keyboard() -> dict[str, Any]:
+    return {
+        "inline_keyboard": [[
+            {"text": "📖 EXPLAIN THIS WEEK'S NEWS", "callback_data": "explain_week"}
+        ]]
+    }
 
 
 def main() -> int:
@@ -189,13 +246,10 @@ def main() -> int:
         events = [event for event in calendar if is_relevant(event)]
         if not events:
             raise RuntimeError("No Medium or High impact USD/EUR/GBP events were found")
-        try:
-            report = generate_report(events)
-        except Exception as ai_error:
-            print(f"AI generation failed, using calendar fallback: {ai_error}", file=sys.stderr)
-            report = fallback_report(events)
-        send_telegram("M3 CAPITAL | WEEKLY MACRO NEWS\n\n" + report)
-        print("Weekly macro report sent successfully.")
+
+        message = build_clean_weekly_message(events)
+        send_telegram(message, reply_markup=weekly_keyboard())
+        print("Weekly macro calendar sent successfully.")
         return 0
     except Exception as error:
         print(f"ERROR: {error}", file=sys.stderr)
