@@ -2,12 +2,12 @@ name: M3 Telegram Explanation Cleanup
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
       timezone: 'Africa/Lagos'
   workflow_dispatch:
 
 concurrency:
-  group: m3-telegram-explain-listener
+  group: m3-telegram-explanation-cleanup
   cancel-in-progress: false
 
 permissions:
