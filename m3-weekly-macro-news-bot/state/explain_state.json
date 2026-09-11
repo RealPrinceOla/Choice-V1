@@ -1,9 +1,6 @@
 {
-  "chat_id": "-1002363527572",
-  "message_ids": [
-    4672,
-    4673
-  ],
-  "expires_at": "2026-09-11T16:13:01.224789+00:00",
-  "status": "active"
+  "chat_id": null,
+  "message_ids": [],
+  "expires_at": null,
+  "status": "idle"
 }
