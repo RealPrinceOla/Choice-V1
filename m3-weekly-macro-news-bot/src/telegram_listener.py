@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from main import fetch_calendar, generate_explanation, is_relevant, send_to_chat, telegram_call
+from main import fetch_calendar, generate_explanation, is_relevant, parse_date, send_to_chat, telegram_call, LAGOS
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 POLL_SECONDS = 240
@@ -48,14 +48,14 @@ def telegram_call_local(method: str, payload: dict[str, Any] | None = None) -> d
 def register_commands() -> None:
     telegram_call_local(
         "setMyCommands",
-        {"commands": [{"command": "explain", "description": "Explain this week's macro news"}]},
+        {"commands": [{"command": "explain", "description": "Explain today's and upcoming macro news"}]},
     )
 
 
-def answer_callback(callback_id: str) -> None:
+def answer_callback(callback_id: str, text: str = "Generating the detailed macro explanation...") -> None:
     telegram_call_local(
         "answerCallbackQuery",
-        {"callback_query_id": callback_id, "text": "Generating the detailed macro explanation...", "show_alert": False},
+        {"callback_query_id": callback_id, "text": text, "show_alert": False},
     )
 
 
@@ -92,10 +92,7 @@ def delete_message_ids(chat_id: str | int, message_ids: list[int]) -> None:
     if not message_ids:
         return
     try:
-        telegram_call(
-            "deleteMessages",
-            {"chat_id": chat_id, "message_ids": message_ids},
-        )
+        telegram_call("deleteMessages", {"chat_id": chat_id, "message_ids": message_ids})
         return
     except Exception as error:
         print(f"Batch delete failed, trying individual deletes: {error}")
@@ -145,6 +142,14 @@ def persist_state_to_git() -> None:
         print(f"Could not persist explanation state: {error}")
 
 
+def filter_current_and_future(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    now = datetime.now(LAGOS)
+    return [
+        event for event in events
+        if parse_date(event["date"]).astimezone(LAGOS) >= now
+    ]
+
+
 def explain_for_chat(chat_id: str | int) -> None:
     if str(chat_id) != target_chat_id():
         print(f"Ignoring explain request from unconfigured chat {chat_id}.")
@@ -156,10 +161,11 @@ def explain_for_chat(chat_id: str | int) -> None:
         return
 
     calendar = fetch_calendar()
-    events = [event for event in calendar if is_relevant(event)]
+    events = filter_current_and_future([event for event in calendar if is_relevant(event)])
     if not events:
-        message_ids = send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nNo Medium or High impact USD, EUR, or GBP events were found.")
+        message_ids = send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nThere are no remaining Medium or High impact USD, EUR, or GBP events for today or the rest of the week.")
     else:
+        print(f"Generating explanation for {len(events)} current/upcoming events.")
         explanation = generate_explanation(events)
         message_ids = send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS EXPLANATION\n\n" + explanation)
 
@@ -179,7 +185,11 @@ def handle_update(update: dict[str, Any]) -> None:
         chat_id = chat.get("id")
         if chat_id is None:
             return
-        answer_callback(str(callback.get("id", "")))
+        state = load_state()
+        if state_is_active(state):
+            answer_callback(str(callback.get("id", "")), "An explanation is already active.")
+        else:
+            answer_callback(str(callback.get("id", "")))
         try:
             explain_for_chat(chat_id)
         except Exception as error:
@@ -218,7 +228,7 @@ def main() -> int:
         telegram_call_local("deleteWebhook", {"drop_pending_updates": False})
         deadline = time.time() + POLL_SECONDS
         offset: int | None = None
-        print("Telegram explain listener started.")
+        print("Telegram explain listener started.", flush=True)
         while time.time() < deadline:
             updates = get_updates(offset)
             if not updates:
@@ -228,10 +238,10 @@ def main() -> int:
                 if isinstance(update_id, int):
                     offset = update_id + 1
                 handle_update(update)
-        print("Telegram explain listener finished its polling window.")
+        print("Telegram explain listener finished its polling window.", flush=True)
         return 0
     except Exception as error:
-        print(f"ERROR: {error}")
+        print(f"ERROR: {error}", flush=True)
         return 1
 
 
