@@ -7,7 +7,7 @@ on:
       timezone: 'Africa/Lagos'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   weekly-macro-news:
@@ -31,3 +31,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python m3-weekly-macro-news-bot/src/main.py
+
+      - name: Commit refreshed calendar cache
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add m3-weekly-macro-news-bot/data/calendar_cache.json
+          git diff --cached --quiet || git commit -m "Refresh macro calendar cache"
+          git push
