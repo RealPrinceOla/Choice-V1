@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
 
 CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+CALENDAR_CACHE_PATH = Path(__file__).resolve().parents[1] / "data" / "calendar_cache.json"
 GEMINI_MODEL = "gemini-3.6-flash"
 GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -28,6 +31,15 @@ def fetch_calendar() -> list[dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError("Forex Factory calendar response was not a list")
     return data
+
+
+def save_calendar_cache(calendar: list[dict[str, Any]]) -> None:
+    CALENDAR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CALENDAR_CACHE_PATH.write_text(
+        json.dumps(calendar, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"Calendar cache updated: {CALENDAR_CACHE_PATH}")
 
 
 def is_relevant(event: dict[str, Any]) -> bool:
@@ -249,6 +261,7 @@ def weekly_keyboard() -> dict[str, Any]:
 def main() -> int:
     try:
         calendar = fetch_calendar()
+        save_calendar_cache(calendar)
         events = [event for event in calendar if is_relevant(event)]
         if not events:
             raise RuntimeError("No Medium or High impact USD/EUR/GBP events were found")
