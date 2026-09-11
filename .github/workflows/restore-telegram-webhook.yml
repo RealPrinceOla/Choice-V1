@@ -1,0 +1,23 @@
+name: Restore M3 Telegram Webhook
+
+on:
+  push:
+    paths:
+      - '.github/workflows/restore-telegram-webhook.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  restore-webhook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Restore Cloudflare Telegram webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+            -d "url=https://fragrant-scene-2d02.cryptocurrencyambassador.workers.dev/" \
+            -d "drop_pending_updates=false"
+          echo
