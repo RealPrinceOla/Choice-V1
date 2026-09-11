@@ -92,7 +92,7 @@ def delete_message_ids(chat_id: str | int, message_ids: list[int]) -> None:
     if not message_ids:
         return
     try:
-        telegram_call("deleteMessages", {"chat_id": chat_id, "message_ids": message_ids})
+        telegram_call_local("deleteMessages", {"chat_id": chat_id, "message_ids": message_ids})
         return
     except Exception as error:
         print(f"Batch delete failed, trying individual deletes: {error}")
@@ -142,6 +142,38 @@ def persist_state_to_git() -> None:
         print(f"Could not persist explanation state: {error}")
 
 
+def cleanup_expired_explanation() -> bool:
+    state = load_state()
+    if state.get("status") != "active" or not state.get("message_ids"):
+        return False
+
+    expires_at = state.get("expires_at")
+    if not expires_at:
+        return False
+
+    try:
+        expired = datetime.fromisoformat(expires_at).timestamp() <= time.time()
+    except Exception:
+        print(f"Invalid explanation expiry timestamp: {expires_at}")
+        return False
+
+    if not expired:
+        return False
+
+    chat_id = state.get("chat_id")
+    message_ids = state.get("message_ids", [])
+    if not chat_id or str(chat_id) != target_chat_id():
+        print("Expired explanation state does not match configured chat. Refusing cleanup.")
+        return False
+
+    print(f"Explanation expired at {expires_at}. Deleting message IDs: {message_ids}")
+    delete_message_ids(chat_id, message_ids)
+    clear_state()
+    persist_state_to_git()
+    print("Expired explanation cleaned up.")
+    return True
+
+
 def filter_current_and_future(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     now = datetime.now(LAGOS)
     return [
@@ -155,6 +187,7 @@ def explain_for_chat(chat_id: str | int) -> None:
         print(f"Ignoring explain request from unconfigured chat {chat_id}.")
         return
 
+    cleanup_expired_explanation()
     state = load_state()
     if state_is_active(state):
         send_to_chat(chat_id, "M3 CAPITAL | WEEKLY MACRO NEWS\n\nAn explanation is already available. It will automatically disappear after one hour.")
@@ -226,10 +259,12 @@ def main() -> int:
     try:
         register_commands()
         telegram_call_local("deleteWebhook", {"drop_pending_updates": False})
+        cleanup_expired_explanation()
         deadline = time.time() + POLL_SECONDS
         offset: int | None = None
         print("Telegram explain listener started.", flush=True)
         while time.time() < deadline:
+            cleanup_expired_explanation()
             updates = get_updates(offset)
             if not updates:
                 continue
