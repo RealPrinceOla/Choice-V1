@@ -191,9 +191,11 @@ def telegram_call(method: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def send_telegram(text: str, reply_markup: dict[str, Any] | None = None) -> None:
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not chat_id:
-        raise RuntimeError("TELEGRAM_CHAT_ID is required")
+    chat_ids_raw = os.getenv("TELEGRAM_CHAT_IDS", os.getenv("TELEGRAM_CHAT_ID", "")).strip()
+    if not chat_ids_raw:
+        raise RuntimeError("TELEGRAM_CHAT_IDS (or TELEGRAM_CHAT_ID) is required")
+    
+    chat_ids = [cid.strip() for cid in chat_ids_raw.split(",") if cid.strip()]
 
     chunks: list[str] = []
     current = ""
@@ -208,15 +210,16 @@ def send_telegram(text: str, reply_markup: dict[str, Any] | None = None) -> None
     if current:
         chunks.append(current)
 
-    for index, chunk in enumerate(chunks):
-        payload: dict[str, Any] = {
-            "chat_id": chat_id,
-            "text": chunk,
-            "disable_web_page_preview": True,
-        }
-        if reply_markup is not None and index == len(chunks) - 1:
-            payload["reply_markup"] = reply_markup
-        telegram_call("sendMessage", payload)
+    for chat_id in chat_ids:
+        for index, chunk in enumerate(chunks):
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            }
+            if reply_markup is not None and index == len(chunks) - 1:
+                payload["reply_markup"] = reply_markup
+            telegram_call("sendMessage", payload)
 
 
 def send_to_chat(chat_id: str | int, text: str) -> list[int]:
@@ -268,7 +271,7 @@ def main() -> int:
 
         message = build_clean_weekly_message(events)
         send_telegram(message, reply_markup=weekly_keyboard())
-        print("Weekly macro calendar sent successfully.")
+        print("Weekly macro calendar sent successfully to all groups.")
         return 0
     except Exception as error:
         print(f"ERROR: {error}", file=sys.stderr)
