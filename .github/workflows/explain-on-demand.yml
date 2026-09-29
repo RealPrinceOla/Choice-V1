@@ -1,0 +1,35 @@
+name: M3 Explain On Demand
+
+on:
+  workflow_dispatch:
+    inputs:
+      chat_id:
+        description: Target Telegram chat id
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  explain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: python -m pip install -r m3-weekly-macro-news-bot/requirements.txt
+
+      - name: Generate and send explanation
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TARGET_CHAT_ID: ${{ github.event.inputs.chat_id }}
+        run: python m3-weekly-macro-news-bot/src/explain_on_demand.py
