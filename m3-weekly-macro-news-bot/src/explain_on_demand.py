@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -215,20 +216,31 @@ def load_state() -> dict[str, Any]:
         return {}
 
 
-def save_state(state: dict[str, Any]) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    subprocess.run(
-        ["git", "config", "user.name", "M3 Bot"],
-        check=False,
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "m3bot@users.noreply.github.com"],
-        check=False,
-    )
-    subprocess.run(["git", "add", str(STATE_PATH)], check=False)
-    subprocess.run(["git", "commit", "-m", "Update explanation state"], check=False)
-    subprocess.run(["git", "push"], check=False)
+def git(*args: str) -> int:
+    return subprocess.run(["git", *args], check=False).returncode
+
+
+def save_state(chat_id: str, message_ids: list[int]) -> None:
+    git("config", "user.name", "M3 Bot")
+    git("config", "user.email", "m3bot@users.noreply.github.com")
+    for attempt in range(5):
+        git("fetch", "origin", "main")
+        git("reset", "--hard", "origin/main")
+        state = load_state()
+        state[chat_id] = message_ids
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        git("add", str(STATE_PATH))
+        if git("diff", "--cached", "--quiet") == 0:
+            print("Explanation state unchanged.")
+            return
+        git("commit", "-m", "Update explanation state")
+        if git("push", "origin", "HEAD:main") == 0:
+            print(f"Explanation state saved on attempt {attempt + 1}.")
+            return
+        print(f"State push rejected, retrying (attempt {attempt + 1}).", file=sys.stderr)
+        time.sleep(3 * (attempt + 1))
+    print("WARNING: could not save explanation state after 5 attempts.", file=sys.stderr)
 
 
 def main() -> int:
@@ -255,8 +267,7 @@ def main() -> int:
             text = generate_explanation(events)
 
         message_ids = send_chunks(chat_id, text)
-        state[chat_id] = message_ids
-        save_state(state)
+        save_state(chat_id, message_ids)
         print(f"Explanation sent to chat {chat_id} in {len(message_ids)} messages.")
         return 0
     except Exception as error:
