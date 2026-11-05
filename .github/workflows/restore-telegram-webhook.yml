@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/restore-telegram-webhook.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -18,6 +19,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-            -d "url=https://fragrant-scene-2d02.cryptocurrencyambassador.workers.dev/" \
+            -d "url=https://m3capital-news-bot.cryptocurrencyambassador.workers.dev/" \
             -d "drop_pending_updates=false"
+          echo
+          curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
           echo
