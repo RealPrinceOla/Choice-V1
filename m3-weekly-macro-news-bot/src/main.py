@@ -56,54 +56,133 @@ def impact_dot(event: dict[str, Any]) -> str:
     return "🔴" if str(event.get("impact", "")).strip().lower() == "high" else "🟠"
 
 
+DIVIDER = "━━━━━━━━━━━━━━━━━━"
+
+
+def local_time(event: dict[str, Any]) -> datetime:
+    return parse_date(event["date"]).astimezone(LAGOS)
+
+
+def group_by_day(events: list[dict[str, Any]]) -> list[tuple[datetime, list[dict[str, Any]]]]:
+    groups: list[tuple[datetime, list[dict[str, Any]]]] = []
+    for event in sorted(events, key=local_time):
+        when = local_time(event)
+        if groups and groups[-1][0].date() == when.date():
+            groups[-1][1].append(event)
+        else:
+            groups.append((when, [event]))
+    return groups
+
+
+def day_header(day: datetime, count: int | None = None) -> str:
+    label = f"📅 {day.strftime('%a %d %b').upper()}"
+    if count is not None:
+        label += f"  ({count} event{'' if count == 1 else 's'})"
+    return label
+
+
+def split_blocks(text: str, size: int = 3900) -> list[str]:
+    """Split text for Telegram, breaking only before a day divider when possible."""
+    blocks: list[str] = []
+    current: list[str] = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        starts_day = line == DIVIDER and index + 1 < len(lines) and lines[index + 1].startswith("📅 ")
+        if starts_day and current:
+            blocks.append("\n".join(current))
+            current = []
+        current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+
+    chunks: list[str] = []
+    buffer = ""
+    for block in blocks:
+        candidate = block if not buffer else buffer.rstrip() + "\n\n" + block
+        if len(candidate) <= size:
+            buffer = candidate
+            continue
+        if buffer:
+            chunks.append(buffer.rstrip())
+        buffer = ""
+        if len(block) <= size:
+            buffer = block
+            continue
+        for line in block.splitlines():
+            candidate = line if not buffer else buffer + "\n" + line
+            if len(candidate) > size:
+                chunks.append(buffer.rstrip())
+                buffer = line
+            else:
+                buffer = candidate
+    if buffer.strip():
+        chunks.append(buffer.rstrip())
+    return chunks
+
+
 def build_clean_weekly_message(events: list[dict[str, Any]]) -> str:
+    groups = group_by_day(events)
+    first_day, last_day = groups[0][0], groups[-1][0]
+    if first_day.month == last_day.month:
+        week_label = f"Week of {first_day.day} to {last_day.day} {last_day.strftime('%b %Y')}"
+    else:
+        week_label = f"Week of {first_day.strftime('%d %b')} to {last_day.strftime('%d %b %Y')}"
     lines = [
-        "M3 CAPITAL | WEEKLY MACRO NEWS",
-        "",
-        f"Week generated {datetime.now(LAGOS).strftime('%d %B %Y')}",
+        "M3 CAPITAL FX | WEEKLY MACRO NEWS",
+        week_label,
+        "🔴 High impact   🟠 Medium impact",
+        "All times WAT (Lagos)",
         "",
     ]
-    for event in sorted(events, key=lambda item: parse_date(item["date"])):
-        local_time = parse_date(event["date"]).astimezone(LAGOS)
-        lines.extend([
-            f"{impact_dot(event)} {event.get('title', '')}",
-            f"{local_time.strftime('%a %d %b %H:%M')} | {event.get('country', '')}",
-            f"Forecast: {event.get('forecast') or 'N/A'} | Previous: {event.get('previous') or 'N/A'}",
-            "",
-        ])
+    for day, items in groups:
+        lines.extend([DIVIDER, day_header(day, len(items)), DIVIDER, ""])
+        for event in items:
+            lines.extend([
+                f"{impact_dot(event)} {local_time(event).strftime('%H:%M')} | {event.get('country', '')} | {event.get('title', '')}",
+                f"    Forecast: {event.get('forecast') or 'N/A'} | Previous: {event.get('previous') or 'N/A'}",
+                "",
+            ])
     return "\n".join(lines).rstrip()
 
 
 def build_explanation_prompt(events: list[dict[str, Any]]) -> str:
     today = datetime.now(LAGOS).strftime("%A, %d %B %Y")
-    events_text = "\n".join(
-        " | ".join([
-            parse_date(event["date"]).astimezone(LAGOS).strftime("%a %d %b %H:%M"),
-            str(event.get("country", "")),
-            str(event.get("impact", "")),
-            str(event.get("title", "")),
-            f"Forecast={event.get('forecast') or 'N/A'}",
-            f"Previous={event.get('previous') or 'N/A'}",
-        ])
-        for event in sorted(events, key=lambda item: parse_date(item["date"]))
-    )
-    return f"""You are the macroeconomic news analyst for M3 Capital.
+    sections = []
+    for day, items in group_by_day(events):
+        rows = "\n".join(
+            " | ".join([
+                local_time(event).strftime("%H:%M"),
+                str(event.get("country", "")),
+                str(event.get("impact", "")),
+                str(event.get("title", "")),
+                f"Forecast={event.get('forecast') or 'N/A'}",
+                f"Previous={event.get('previous') or 'N/A'}",
+            ])
+            for event in items
+        )
+        sections.append(f"{DIVIDER}\n{day_header(day)}\n{DIVIDER}\n{rows}")
+    events_text = "\n\n".join(sections)
+    return f"""You are the macroeconomic news analyst for M3 Capital FX.
 
-Today is {today}. A user requested a detailed explanation of this week's Medium and High impact macroeconomic calendar.
+Today is {today}. A user requested a detailed explanation of this week's Medium and High impact macroeconomic calendar. All times are WAT (Lagos).
 
 PURPOSE:
 - Explain what the week's relevant news means and why it matters.
 - This is macroeconomic intelligence only.
-- NEVER give buy/sell signals, entries, stop losses, take profits, or trade instructions.
+- NEVER give buy/sell signals, entries, stop losses, take profits, position sizes, or trade instructions.
 - Focus on USD, EUR/USD, GOLD, and GBP/USD when GBP is materially relevant.
 - Use ONLY the supplied Medium and High impact events.
 - Do not omit a materially important eligible event.
 - You MAY combine tightly linked releases into one section when they are part of the same economic decision or release window, but mention every component event.
 - Do not treat any market reaction as guaranteed.
 
+LAYOUT (follow exactly):
+- The calendar data below is grouped by day. Each day starts with a 3-line header: a divider line, a day line starting with 📅, and another divider line.
+- Reproduce every day header EXACTLY as given (same characters, same order), then explain only that day's events underneath it.
+- Never mix events from different days under one header, and never add headers for days that are not in the data.
+
 FOR EVERY EVENT OR TIGHTLY LINKED EVENT GROUP, INCLUDE:
-🔴 or 🟠 EVENT NAME
-Date/time: ...
+🔴 or 🟠 HH:MM | CURRENCY | EVENT NAME
 Forecast: ... | Previous: ...
 What it means: ...
 What is expected: ...
@@ -115,7 +194,11 @@ GOLD: Bullish / Bearish / Mixed / Limited - reason
 GBP/USD: Bullish / Bearish / Mixed / Limited - reason, when relevant
 Key caveat: ...
 
-After the events, include:
+AFTER THE LAST DAY, output this exact 3-line header:
+{DIVIDER}
+🧭 WEEK SUMMARY
+{DIVIDER}
+Then include:
 WEEK AHEAD
 USD WATCH
 EUR WATCH
@@ -123,7 +206,7 @@ GOLD WATCH
 MACRO SUMMARY
 
 Formatting:
-- Plain text only.
+- Plain text only. No markdown, no asterisks, no hashes.
 - Telegram-friendly.
 - Blank line between event sections.
 - Be detailed enough to be useful, but concise enough to avoid unnecessary repetition.
@@ -197,18 +280,7 @@ def send_telegram(text: str, reply_markup: dict[str, Any] | None = None) -> None
     
     chat_ids = [cid.strip() for cid in chat_ids_raw.split(",") if cid.strip()]
 
-    chunks: list[str] = []
-    current = ""
-    for line in text.splitlines():
-        candidate = line if not current else current + "\n" + line
-        if len(candidate) > 3900:
-            if current:
-                chunks.append(current)
-            current = line
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
+    chunks = split_blocks(text)
 
     for chat_id in chat_ids:
         for index, chunk in enumerate(chunks):
@@ -223,18 +295,7 @@ def send_telegram(text: str, reply_markup: dict[str, Any] | None = None) -> None
 
 
 def send_to_chat(chat_id: str | int, text: str) -> list[int]:
-    chunks: list[str] = []
-    current = ""
-    for line in text.splitlines():
-        candidate = line if not current else current + "\n" + line
-        if len(candidate) > 3900:
-            if current:
-                chunks.append(current)
-            current = line
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
+    chunks = split_blocks(text)
 
     message_ids: list[int] = []
     for chunk in chunks:
